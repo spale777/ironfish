@@ -29,6 +29,10 @@ export class Miner extends IronfishCommand {
 
   async start(): Promise<void> {
     const { flags } = this.parse(Miner)
+    const statusUpdateThreshold = 1000
+    let lastStatusUpdate = 0
+    let accumulatedHashes = 0
+    let numberOfHashChecks = 0
 
     if (flags.threads === 0 || flags.threads < -1) {
       throw new Error('--threads must be a positive integer or -1.')
@@ -56,18 +60,52 @@ export class Miner extends IronfishCommand {
       })
     }
 
-    const updateHashPower = () => {
-      cli.action.status = `${Math.max(0, Math.floor(miner.hashRate.rate5s))} H/s`
+    const getHashRate = () => {
+      return Math.max(0, Math.floor(miner.hashRate.rate5s))
+    }
+
+    const updateHashPower = (immediate = false) => {
+      const throttled = () => {
+        const hashes = Math.floor(accumulatedHashes / numberOfHashChecks)
+        accumulatedHashes = 0
+        numberOfHashChecks = 0
+
+        lastStatusUpdate = Date.now()
+        cli.action.status = `${hashes} H/s`
+      }
+
+      let timeout: ReturnType<typeof setTimeout> = setTimeout(() => {
+        return
+      })
+
+      accumulatedHashes += getHashRate()
+      numberOfHashChecks++
+
+      if (lastStatusUpdate === 0 || immediate) {
+        throttled()
+        lastStatusUpdate = Date.now()
+
+        return
+      }
+
+      clearTimeout(timeout)
+      timeout = setTimeout(() => {
+        if (Date.now() - lastStatusUpdate < statusUpdateThreshold) {
+          return
+        }
+
+        throttled()
+      }, statusUpdateThreshold - (Date.now() - lastStatusUpdate))
     }
 
     const onStartMine = (request: MineRequest) => {
       cli.action.start(`Mining block ${request.sequence} on request ${request.miningRequestId}`)
-      updateHashPower()
+      updateHashPower(true)
     }
 
     const onStopMine = () => {
       cli.action.start('Waiting for next block')
-      updateHashPower()
+      updateHashPower(true)
     }
 
     async function* nextBlock(blocksStream: AsyncGenerator<MineRequest, void, void>) {
